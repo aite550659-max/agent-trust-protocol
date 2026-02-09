@@ -1,0 +1,12 @@
+src/
+test-exchange-rate.ts
+examples/
+docs/
+*.test.ts
+__tests__/
+__mocks__/
+jest.config.js
+tsconfig.json
+.git/
+.gitignore
+EXCHANGE_RATE_INTEGRATION.md
