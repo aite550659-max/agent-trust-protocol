@@ -19,15 +19,15 @@ export const DEFAULT_INDEXER_URLS = {
 export const NETWORK_ACCOUNTS = {
   mainnet: {
     network: '0.0.800',
-    treasury: '0.0.801',
+    treasury: '0.0.8332371',  // ATP Treasury — controlled by Gregg (0.0.8332371-rfdnp)
   },
   testnet: {
     network: '0.0.800',
-    treasury: '0.0.801',
+    treasury: '0.0.801',  // Testnet placeholder
   },
   previewnet: {
     network: '0.0.800',
-    treasury: '0.0.801',
+    treasury: '0.0.801',  // Previewnet placeholder
   },
 };
 
