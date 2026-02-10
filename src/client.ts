@@ -16,7 +16,7 @@
  *   name: 'MyAgent',
  *   soulHash: 'sha256:abc123...',
  *   manifestUri: 'ipfs://Qm...',
- *   pricing: { flashBaseFee: 0.02, standardBaseFee: 5.0, ... }
+ *   pricing: { flashBaseFee: 0.07, standardBaseFee: 5.0, ... }
  * });
  * ```
  */
@@ -34,7 +34,7 @@ export class ATPClient {
   private hederaClient: Client;
   private config: ATPConfig;
   private agentCache: Map<string, { owner: string; hcsTopicId: string; creator: string }>;
-  private rentalCache: Map<string, any>;
+  // Rental persistence handled by RentalStore inside RentalManager
   
   /** Manage ATP agents: create, update pricing, query metadata. */
   public agents: AgentManager;
@@ -58,8 +58,6 @@ export class ATPClient {
   constructor(config: ATPConfig) {
     this.config = config;
     this.agentCache = new Map();
-    this.rentalCache = new Map();
-    
     // Initialize Hedera client
     this.hederaClient = this.createHederaClient();
     
@@ -80,8 +78,6 @@ export class ATPClient {
       this.hederaClient,
       this.config,
       resolveAgent,
-      (rentalId, rental) => this.rentalCache.set(rentalId, rental),
-      (rentalId) => this.rentalCache.get(rentalId)
     );
     this.reputation = new ReputationManager(this.hederaClient, this.config);
     this.disputes = new DisputeManager(this.hederaClient, this.config);

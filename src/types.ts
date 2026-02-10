@@ -50,6 +50,7 @@ export interface Rental {
   usageBufferUsd: number;
   usageBufferHbar: number;
   escrowAccount: string;
+  escrowKey?: string;
   pricingSnapshot: PricingConfig;
   constraints: RentalConstraints;
   startedAt: string;

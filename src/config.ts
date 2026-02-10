@@ -6,7 +6,7 @@ export const ATP_VERSION = '1.0';
 export const HCS_SCHEMA_VERSION = '2.0';
 
 export const MINIMUM_PRICING = {
-  flashBaseFee: 0.02,      // $0.02 minimum (prevents spam)
+  flashBaseFee: 0.07,      // $0.07 minimum (covers escrow creation + margin)
   standardBaseFee: 5.00,   // $5.00 minimum (ensures sustainability)
 };
 

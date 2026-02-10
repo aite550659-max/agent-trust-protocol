@@ -62,7 +62,7 @@ describe('Fee Distribution Calculations', () => {
     expect(dist.atpTreasury).toBeCloseTo(2.00, 2);
   });
 
-  test('$0.02 flash rental distributes correctly', () => {
+  test('$0.07 flash rental distributes correctly', () => {
     const dist = calculateDistribution(0.02);
     expect(dist.ownerRevenue).toBeCloseTo(0.0184, 4);
     expect(dist.creatorRoyalty).toBeCloseTo(0.001, 4);

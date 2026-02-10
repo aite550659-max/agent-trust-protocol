@@ -17,3 +17,4 @@ export { ExchangeRateService, exchangeRateService } from './exchange-rate';
 
 export * from './types';
 export * from './config';
+export { RentalStore, StoredRental } from './rental-store';

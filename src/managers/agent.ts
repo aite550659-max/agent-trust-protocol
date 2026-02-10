@@ -171,7 +171,7 @@ export class AgentManager {
    * const monetized = await atp.agents.monetize({
    *   hcsTopicId: agent.hcsTopicId,
    *   name: agent.name,
-   *   pricing: { flashBaseFee: 0.02, standardBaseFee: 5.0, ... }
+   *   pricing: { flashBaseFee: 0.07, standardBaseFee: 5.0, ... }
    * });
    * // monetized.agentId === NFT token ID (used for rentals)
    * ```
@@ -286,7 +286,7 @@ export class AgentManager {
    *   name: 'Aite',
    *   soulHash: 'sha256:abc123...',
    *   manifestUri: 'ipfs://QmXyz...',
-   *   pricing: { flashBaseFee: 0.02, standardBaseFee: 5.0, perInstruction: 0.05, perMinute: 0.01, llmMarkupBps: 150, toolMarkupBps: 150 }
+   *   pricing: { flashBaseFee: 0.07, standardBaseFee: 5.0, perInstruction: 0.05, perMinute: 0.01, llmMarkupBps: 150, toolMarkupBps: 150 }
    * });
    * ```
    */

@@ -17,26 +17,35 @@ import { HCSLogger } from '../hcs/logger';
 import { Indexer } from '../indexer/client';
 import { TRANSACTION_SPLITS, NETWORK_ACCOUNTS } from '../config';
 import { exchangeRateService } from '../exchange-rate';
+import { RentalStore, StoredRental } from '../rental-store';
+
+/** Convert HBAR float to tinybars (integer), avoiding floating point decimals. */
+function toTinybars(hbar: number): number {
+  return Math.round(hbar * 1e8);
+}
 
 export class RentalManager {
   private hcsLogger: HCSLogger;
   private indexer: Indexer;
   private resolveAgent: (agentId: string) => Promise<{ owner: string; hcsTopicId: string; creator: string }>;
-  private onRentalCreated?: (rentalId: string, rental: Rental) => void;
-  private getRental?: (rentalId: string) => Rental | undefined;
+  private store: RentalStore;
 
   constructor(
     private client: Client,
     private config: ATPConfig,
     resolveAgent: (agentId: string) => Promise<{ owner: string; hcsTopicId: string; creator: string }>,
-    onRentalCreated?: (rentalId: string, rental: Rental) => void,
-    getRental?: (rentalId: string) => Rental | undefined
+    /** Optional data directory for persistent rental store (default: <sdk>/data) */
+    dataDir?: string,
   ) {
     this.hcsLogger = new HCSLogger(client, config);
     this.indexer = new Indexer(config);
     this.resolveAgent = resolveAgent;
-    this.onRentalCreated = onRentalCreated;
-    this.getRental = getRental;
+    this.store = new RentalStore(dataDir);
+  }
+
+  /** Get the underlying RentalStore (for inspection/testing). */
+  getStore(): RentalStore {
+    return this.store;
   }
 
   /**
@@ -123,15 +132,16 @@ export class RentalManager {
 
     const escrowAccountId = escrowReceipt.accountId.toString();
 
-    // Step 5: Transfer stake + buffer to escrow
+    // Step 5: Transfer stake + buffer to escrow (use tinybars to avoid float issues)
+    const totalTinybars = toTinybars(totalHbar);
     const fundingTx = new TransferTransaction()
       .addHbarTransfer(
         AccountId.fromString(this.config.operatorId),
-        new Hbar(-totalHbar)
+        Hbar.fromTinybars(-totalTinybars)
       )
       .addHbarTransfer(
         AccountId.fromString(escrowAccountId),
-        new Hbar(totalHbar)
+        Hbar.fromTinybars(totalTinybars)
       );
 
     const fundingResponse = await fundingTx.execute(this.client);
@@ -185,8 +195,9 @@ export class RentalManager {
       usageBufferUsd: params.bufferUsd,
       usageBufferHbar: bufferHbar,
       escrowAccount: escrowAccountId,
+      escrowKey: escrowKey.toStringRaw(),
       pricingSnapshot: {
-        flashBaseFee: 0.02,
+        flashBaseFee: 0.07,
         standardBaseFee: 5.00,
         perInstruction: 0.05,
         perMinute: 0.01,
@@ -204,10 +215,8 @@ export class RentalManager {
       status: 'active',
     };
 
-    // Cache the rental for immediate use
-    if (this.onRentalCreated) {
-      this.onRentalCreated(rentalId, rental);
-    }
+    // Persist rental (including escrow key) to disk immediately
+    this.store.put(rental as StoredRental);
 
     return rental;
   }
@@ -224,12 +233,10 @@ export class RentalManager {
       throw new Error(`Invalid rentalId: must be a non-empty string (max 100 chars), got "${rentalId?.slice(0, 20)}"`);
     }
 
-    // Try cache first
-    if (this.getRental) {
-      const cached = this.getRental(rentalId);
-      if (cached) {
-        return cached;
-      }
+    // Try persistent store first
+    const stored = this.store.get(rentalId);
+    if (stored) {
+      return stored;
     }
 
     // Fall back to indexer
@@ -269,17 +276,58 @@ export class RentalManager {
     }
 
     const isRenter = rental.renter === this.config.operatorId;
+    const agent = await this.resolveAgent(rental.agentId);
 
-    // Calculate pro-rata charges (simplified)
-    const totalChargedUsd = 0; // Would calculate based on usage
+    // Calculate pro-rata charges based on elapsed time
+    const durationMs = Date.now() - new Date(rental.startedAt).getTime();
+    const durationMinutes = Math.round(durationMs / 60000);
 
-    // Execute settlement (simplified - would use actual escrow account)
-    // ... distribution logic ...
+    // For early termination: charge base fee only (no per-instruction/token charges)
+    const baseFee = rental.rentalType === 'flash' ? 0.07 : 5.00;
+    const totalChargedUsd = Math.min(baseFee, rental.usageBufferUsd);
+
+    // Execute real settlement from escrow
+    const escrowKey = rental.escrowKey;
+    if (!escrowKey) {
+      throw new Error(`No escrow key for rental ${rentalId} — cannot settle termination`);
+    }
+
+    const hbarRate = await exchangeRateService.getRate();
+    const totalEscrowHbar = rental.stakeHbar + rental.usageBufferHbar;
+    const chargedHbar = totalChargedUsd / hbarRate;
+
+    // On termination: owner gets charged amount (split), renter gets stake + unused buffer
+    // Use tinybars to avoid floating point issues
+    const totalEscrowTb = toTinybars(totalEscrowHbar);
+    const ownerTb = toTinybars(chargedHbar * TRANSACTION_SPLITS.owner_revenue);
+    const creatorTb = toTinybars(chargedHbar * TRANSACTION_SPLITS.creator_royalty);
+    const networkTb = toTinybars(chargedHbar * TRANSACTION_SPLITS.network_contribution);
+    const treasuryTb = toTinybars(chargedHbar * TRANSACTION_SPLITS.atp_treasury);
+    const renterRefundTb = totalEscrowTb - ownerTb - creatorTb - networkTb - treasuryTb;
+
+    const networkAccount = NETWORK_ACCOUNTS[this.config.network].network;
+    const treasuryAccount = NETWORK_ACCOUNTS[this.config.network].treasury;
+
+    const escrowPrivateKey = PrivateKey.fromStringED25519(escrowKey);
+
+    const settleTx = new TransferTransaction()
+      .addHbarTransfer(AccountId.fromString(rental.escrowAccount), Hbar.fromTinybars(-totalEscrowTb))
+      .addHbarTransfer(AccountId.fromString(rental.owner), Hbar.fromTinybars(ownerTb))
+      .addHbarTransfer(AccountId.fromString(agent.creator), Hbar.fromTinybars(creatorTb))
+      .addHbarTransfer(AccountId.fromString(networkAccount), Hbar.fromTinybars(networkTb))
+      .addHbarTransfer(AccountId.fromString(treasuryAccount), Hbar.fromTinybars(treasuryTb))
+      .addHbarTransfer(AccountId.fromString(rental.renter), Hbar.fromTinybars(renterRefundTb))
+      .freezeWith(this.client);
+
+    await settleTx.sign(escrowPrivateKey);
+    const settleResponse = await settleTx.execute(this.client);
+    const settleReceipt = await settleResponse.getReceipt(this.client);
+
+    if (settleReceipt.status !== Status.Success) {
+      throw new Error(`Termination settlement failed for rental ${rentalId}: ${settleReceipt.status}`);
+    }
 
     // Log termination to HCS
-    const agent = await this.resolveAgent(rental.agentId);
-    const hcsTopicId = agent.hcsTopicId;
-
     const terminationMessage = this.hcsLogger.createMessage(
       'rental_terminated',
       rental.agentId,
@@ -288,17 +336,28 @@ export class RentalManager {
         terminated_by: this.config.operatorId,
         role: isRenter ? 'renter' : 'owner',
         reason: reason || 'manual_termination',
-        duration_minutes: 0, // Would calculate
+        duration_minutes: durationMinutes,
         pro_rata_billing: true,
         total_charged_usd: totalChargedUsd,
+        total_charged_hbar: chargedHbar,
+        hbar_rate_usd: hbarRate,
+        distribution_hbar: {
+          owner: ownerTb / 1e8,
+          creator: creatorTb / 1e8,
+          network: networkTb / 1e8,
+          treasury: treasuryTb / 1e8,
+          renter_refund: renterRefundTb / 1e8,
+        },
         stake_returned: true,
-        unused_buffer_returned_usd: rental.usageBufferUsd,
+        unused_buffer_returned_usd: Math.max(0, rental.usageBufferUsd - totalChargedUsd),
+        transaction_id: settleResponse.transactionId.toString(),
       }
     );
 
-    if (hcsTopicId) {
-      await this.hcsLogger.log(terminationMessage, hcsTopicId);
-    }
+    await this.hcsLogger.log(terminationMessage, agent.hcsTopicId);
+
+    // Mark terminated in store
+    this.store.complete(rentalId, 'terminated');
   }
 
   /**
@@ -339,25 +398,67 @@ export class RentalManager {
     const rental = await this.getStatus(rentalId);
     const agent = await this.resolveAgent(rental.agentId);
 
-    // Calculate distribution splits
-    const totalCharged = usage.totalCostUsd;
+    // Cap usage to buffer — escrow can't pay more than it holds
+    const bufferExceeded = usage.totalCostUsd > rental.usageBufferUsd;
+    const totalCharged = Math.min(usage.totalCostUsd, rental.usageBufferUsd);
     const creatorRoyalty = totalCharged * TRANSACTION_SPLITS.creator_royalty;
     const networkContribution = totalCharged * TRANSACTION_SPLITS.network_contribution;
     const atpTreasury = totalCharged * TRANSACTION_SPLITS.atp_treasury;
     const ownerRevenue = totalCharged * TRANSACTION_SPLITS.owner_revenue;
 
-    // Execute distribution (simplified - would use actual escrow + scheduled transactions)
+    // Convert USD amounts to HBAR using real-time exchange rate
+    const hbarRate = await exchangeRateService.getRate();
+    const totalChargedHbar = totalCharged / hbarRate;
+    const creatorHbar = creatorRoyalty / hbarRate;
+    const networkHbar = networkContribution / hbarRate;
+    const treasuryHbar = atpTreasury / hbarRate;
+    const ownerHbar = ownerRevenue / hbarRate;
+    const unusedBufferHbar = Math.max(0, (rental.usageBufferUsd - totalCharged)) / hbarRate;
+    const stakeReturnHbar = rental.stakeHbar;
+
     const networkAccount = NETWORK_ACCOUNTS[this.config.network].network;
     const treasuryAccount = NETWORK_ACCOUNTS[this.config.network].treasury;
 
-    // Distribution transaction would go here
-    // const distributionTx = new TransferTransaction()
-    //   .addHbarTransfer(escrowAccount, -totalChargedHbar)
-    //   .addHbarTransfer(creator, creatorRoyaltyHbar)
-    //   .addHbarTransfer(network, networkHbar)
-    //   .addHbarTransfer(treasury, treasuryHbar)
-    //   .addHbarTransfer(owner, ownerHbar)
-    //   .addHbarTransfer(renter, unusedBufferHbar);
+    // Calculate duration
+    const durationMs = Date.now() - new Date(rental.startedAt).getTime();
+    const durationMinutes = Math.round(durationMs / 60000);
+
+    // Execute settlement: escrow → owner, creator, network, treasury, renter (stake + unused buffer)
+    const escrowKey = rental.escrowKey;
+    if (!escrowKey) {
+      throw new Error(`No escrow key available for rental ${rentalId} — cannot settle`);
+    }
+
+    const escrowPrivateKey = PrivateKey.fromStringED25519(escrowKey);
+
+    // Convert all amounts to tinybars to avoid floating point issues
+    const creatorTb = toTinybars(creatorHbar);
+    const networkTb = toTinybars(networkHbar);
+    const treasuryTb = toTinybars(treasuryHbar);
+    const stakeReturnTb = toTinybars(stakeReturnHbar);
+    const unusedBufferTb = toTinybars(unusedBufferHbar);
+    const totalEscrowTb = toTinybars(rental.stakeHbar + rental.usageBufferHbar);
+    // Owner absorbs rounding dust
+    const ownerTb = totalEscrowTb - creatorTb - networkTb - treasuryTb - stakeReturnTb - unusedBufferTb;
+
+    const distributionTx = new TransferTransaction()
+      .addHbarTransfer(AccountId.fromString(rental.escrowAccount), Hbar.fromTinybars(-totalEscrowTb))
+      .addHbarTransfer(AccountId.fromString(rental.owner), Hbar.fromTinybars(ownerTb))
+      .addHbarTransfer(AccountId.fromString(agent.creator), Hbar.fromTinybars(creatorTb))
+      .addHbarTransfer(AccountId.fromString(networkAccount), Hbar.fromTinybars(networkTb))
+      .addHbarTransfer(AccountId.fromString(treasuryAccount), Hbar.fromTinybars(treasuryTb))
+      .addHbarTransfer(AccountId.fromString(rental.renter), Hbar.fromTinybars(stakeReturnTb + unusedBufferTb))
+      .freezeWith(this.client);
+
+    await distributionTx.sign(escrowPrivateKey);
+    const distributionResponse = await distributionTx.execute(this.client);
+    const distributionReceipt = await distributionResponse.getReceipt(this.client);
+
+    if (distributionReceipt.status !== Status.Success) {
+      throw new Error(`Settlement failed for rental ${rentalId}: ${distributionReceipt.status}`);
+    }
+
+    const distributionTxId = distributionResponse.transactionId.toString();
 
     // Log completion to HCS
     const completionMessage = this.hcsLogger.createMessage(
@@ -368,33 +469,44 @@ export class RentalManager {
         renter: rental.renter,
         owner: rental.owner,
         creator: agent.creator,
-        duration_minutes: 0, // Would calculate from startedAt
+        duration_minutes: durationMinutes,
         uptime_percentage: usage.uptimePercentage || 100,
         instructions_total: usage.totalInstructions,
         tokens_total: usage.totalTokens,
         usage_breakdown: {
-          base_fee: 5.00,
+          base_fee: rental.rentalType === 'flash' ? 0.07 : 5.00,
           per_instruction: usage.totalInstructions * 0.05,
-          llm_costs: usage.totalCostUsd - 5.00,
+          llm_costs: Math.max(0, usage.totalCostUsd - (rental.rentalType === 'flash' ? 0.07 : 5.00)),
         },
         total_charged_usd: totalCharged,
-        total_charged_hbar: totalCharged / 0.10, // Simplified conversion
+        actual_usage_usd: usage.totalCostUsd,
+        buffer_exceeded: bufferExceeded,
+        total_charged_hbar: totalChargedHbar,
+        hbar_rate_usd: hbarRate,
         distribution: {
           creator_royalty: creatorRoyalty,
           network_contribution: networkContribution,
           atp_treasury: atpTreasury,
           owner_revenue: ownerRevenue,
         },
+        distribution_hbar: {
+          creator: creatorTb / 1e8,
+          network: networkTb / 1e8,
+          treasury: treasuryTb / 1e8,
+          owner: ownerTb / 1e8,
+          renter_refund: (stakeReturnTb + unusedBufferTb) / 1e8,
+        },
         stake_returned: true,
-        unused_buffer_returned_usd: rental.usageBufferUsd - totalCharged,
+        unused_buffer_returned_usd: Math.max(0, rental.usageBufferUsd - totalCharged),
         transaction_ids: {
-          distribution: 'pending', // Would include actual tx IDs
-          stake_return: 'pending',
-          buffer_refund: 'pending',
+          distribution: distributionTxId,
         },
       }
     );
 
     await this.hcsLogger.log(completionMessage, agent.hcsTopicId);
+
+    // Mark rental completed in persistent store (removes escrow key)
+    this.store.complete(rentalId, 'completed');
   }
 }

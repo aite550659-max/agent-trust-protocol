@@ -78,10 +78,10 @@ describe('ExchangeRateService', () => {
     
     it('should calculate correct HBAR amounts for flash rental', async () => {
       const rate = await service.getRate();
-      const flashRentalUsd = 0.02;
+      const flashRentalUsd = 0.07;
       const expectedHbar = flashRentalUsd / rate;
       
-      expect(expectedHbar).toBeCloseTo(0.2, 2); // 0.20 HBAR
+      expect(expectedHbar).toBeCloseTo(0.7, 2); // 0.70 HBAR at $0.10 test rate
     });
     
     it('should calculate correct HBAR amounts for standard rental', async () => {
