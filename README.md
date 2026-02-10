@@ -1,180 +1,100 @@
-# @hashgraph/atp-sdk
+# Agent Trust Protocol (ATP)
 
-**Agent Trust Protocol SDK for Hedera (Native Services)**
+**Verifiable agents. Trustless rentals. Invisible infrastructure.**
 
-A TypeScript SDK for building, renting, and managing AI agents using the Agent Trust Protocol (ATP) on Hedera.
+ATP is an open standard for AI agent ownership, rental, and trust on [Hedera](https://hedera.com). It enables agents to be registered with verifiable souls, rented between parties with automatic escrow settlement, and tracked with immutable audit trails.
 
-## Architecture
+## What ATP Does
 
-ATP uses **Hedera-native services** (HTS, HCS, Scheduled Transactions) instead of traditional smart contracts. This provides:
+- **Agent Identity** — Register agents on HCS with a cryptographic soul hash
+- **Trustless Rentals** — Escrow-based rental flow with automatic multi-party settlement
+- **Revenue Splits** — 92% owner / 5% creator / 2% network / 1% treasury
+- **Immutable Audit Trail** — Every rental, transfer, and soul update logged to HCS
+- **Trust Levels** — Tiered runtime verification (self-attested → TEE/EQTY Lab)
 
-- **69x cheaper** per-rental overhead ($0.0005 vs $0.035)
-- **600x higher** theoretical TPS (10,000 vs 15)
-- **Simpler security** model (no contract vulnerabilities)
-- **Full transparency** via immutable HCS audit trails
-
-See [ATP Architecture Comparison](https://github.com/hashgraph/atp-sdk/blob/main/docs/ATP_ARCHITECTURE_COMPARISON.md) for details.
-
-## Installation
+## Install
 
 ```bash
-npm install @hashgraph/atp-sdk
+npm install @aite550659/atp-sdk
 ```
 
 ## Quick Start
 
 ```typescript
-import { ATPClient } from '@hashgraph/atp-sdk';
+import { ATPClient } from '@aite550659/atp-sdk';
 
-// Initialize client
 const atp = new ATPClient({
-  network: 'testnet',
-  operatorId: '0.0.12345',
-  operatorKey: 'your-private-key',
-  indexerUrl: 'https://atp-indexer-testnet.hedera.com'
+  network: 'mainnet',
+  operatorId: '0.0.YOUR_ACCOUNT',
+  operatorKey: 'YOUR_PRIVATE_KEY',
 });
 
-// Create an agent
-const agent = await atp.agents.create({
+// Register an agent
+const agent = await atp.agents.register({
   name: 'MyAgent',
-  soulHash: 'sha256:abc123...',
-  manifestUri: 'ipfs://Qm...',
-  pricing: {
-    flashBaseFee: 0.02,
-    standardBaseFee: 5.00,
-    perInstruction: 0.05,
-    perMinute: 0.01,
-    llmMarkupBps: 150,
-    toolMarkupBps: 150
-  }
+  soulHash: 'sha256:...',
+  pricing: { flashBaseFee: 0.07, standardBaseFee: 5.0 },
 });
 
 // Rent an agent
 const rental = await atp.rentals.initiate({
   agentId: agent.agentId,
-  type: 'session',
-  stake: 50.00,
-  buffer: 100.00,
-  constraints: {
-    toolsBlocked: ['wallet'],
-    memoryAccessLevel: 'sandboxed',
-    topicsBlocked: [],
-    maxPerInstructionCost: 10.00,
-    maxDailyCost: 100.00
-  }
+  type: 'flash',
+  stakeUsd: 0.10,
+  bufferUsd: 0.10,
 });
 
-// Check rental status
-const status = await atp.rentals.getStatus(rental.rentalId);
-
-// Complete rental
+// Complete and settle
 await atp.rentals.complete(rental.rentalId, {
-  totalInstructions: 12,
-  totalTokens: 24000,
-  totalCost: 8.50
+  totalInstructions: 1,
+  totalTokens: 500,
+  totalCostUsd: 0.08,
 });
 ```
 
-## Features
+## Protocol Spec
 
-### Agent Management
-- Create agents (HTS NFT with 5% royalty)
-- Update pricing
-- Transfer ownership
-- Query metadata
+See [docs/](./docs/) for the full protocol specification, HCS message schemas, and architecture.
 
-### Rental Lifecycle
-- Initiate rentals (flash/session/term)
-- Execute instructions with constraints
-- Heartbeat monitoring
-- Settlement with automatic splits
+## Key Concepts
 
-### Reputation System
-- Computed from HCS events
-- Portable across all ATP agents
-- Query via indexer or compute directly
+### Two-Phase Agent Lifecycle
+1. **Identity Phase** — Agent registers on HCS with soul hash. Free, instant.
+2. **Commerce Phase** — Optional NFT minting for ownership transfer and rental marketplace.
 
-### Dispute Resolution
-- File disputes with challenger-funded stakes
-- Arbiter selection via VRF
-- Evidence-based rulings
-- Automatic compensation distribution
+### Rental Types
+| Type | Min Price | Use Case |
+|------|-----------|----------|
+| Flash | $0.07 | Single instruction |
+| Session | $5.00 | Hours of interaction |
+| Term | Custom | Days or longer engagements |
 
-### HCS Audit Trail
-- Every action logged to HCS
-- Gap-free sequencing
-- Consensus timestamps
-- Publicly verifiable
+### Trust Levels
+| Level | Verification | Example |
+|-------|-------------|---------|
+| 0 | Self-attested | Agent claims its own soul hash |
+| 1 | Owner-verified | Owner attests agent runtime |
+| 2 | Third-party audited | Independent verification |
+| 3 | TEE/Hardware | GPU TEE or EQTY Lab attestation |
 
-## Documentation
+## Mainnet Records
 
-- [Getting Started](./docs/getting-started.md)
-- [API Reference](./docs/api-reference.md)
-- [HCS Message Schema](./docs/ATP_HCS_SCHEMA_V2.md)
-- [Architecture Comparison](./docs/ATP_ARCHITECTURE_COMPARISON.md)
-- [Examples](./examples/)
-
-## Requirements
-
-- Node.js >= 18
-- Hedera account with HBAR balance
-- ATP indexer URL (or run your own)
-
-## Development
-
-```bash
-# Install dependencies
-npm install
-
-# Build
-npm run build
-
-# Test
-npm test
-
-# Lint
-npm run lint
-```
-
-## Architecture
-
-```
-@hashgraph/atp-sdk
-├── src/
-│   ├── client.ts          # Main ATP client
-│   ├── managers/
-│   │   ├── agent.ts       # Agent creation & management
-│   │   ├── rental.ts      # Rental lifecycle
-│   │   ├── reputation.ts  # Reputation queries
-│   │   └── dispute.ts     # Dispute filing & resolution
-│   ├── hcs/
-│   │   └── logger.ts      # HCS message submission
-│   ├── indexer/
-│   │   └── client.ts      # Indexer REST API client
-│   ├── types.ts           # TypeScript interfaces
-│   └── config.ts          # Constants & defaults
-├── examples/              # Usage examples
-├── test/                  # Test suite
-└── docs/                  # Documentation
-```
-
-## Contributing
-
-Contributions welcome! Please see [CONTRIBUTING.md](./CONTRIBUTING.md).
+- **First ATP agent registered:** HCS Seq #70 on topic 0.0.10261370
+- **First mainnet rental:** HCS Seq #74-75
+- **View on HashScan:** [0.0.10261370](https://hashscan.io/mainnet/topic/0.0.10261370)
 
 ## License
 
-Apache-2.0
+Apache-2.0 — See [LICENSE](./LICENSE)
 
-## Links
+## Legal
 
-- [ATP Specification](https://github.com/hashgraph/atp-spec)
-- [Hedera Hashgraph](https://hedera.com)
-- [HCS Documentation](https://docs.hedera.com/hedera/sdks-and-apis/sdks/consensus-service)
-- [HTS Documentation](https://docs.hedera.com/hedera/sdks-and-apis/sdks/token-service)
+See [LEGAL.md](./LEGAL.md) for terms of use and liability framework.
+
+## Contact
+
+For inquiries: Gregory.L.Bell@gmail.com
 
 ---
 
-**Built by:** Gregg Bell ([@GregoryLBell](https://x.com/GregoryLBell)), Aite ([@TExplorer59](https://x.com/TExplorer59))  
-**Status:** Alpha (v0.1.0)  
-**Architecture:** Hedera-Native (no smart contracts)
+*Built on Hedera. Trust but Verify.*

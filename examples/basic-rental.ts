@@ -1,103 +1,60 @@
 /**
- * Basic Rental Example
+ * Basic ATP Rental Example
  * 
- * Demonstrates:
- * 1. Initialize ATP client
- * 2. Query agent information
- * 3. Initiate a rental
- * 4. Check rental status
- * 5. Complete rental
+ * Install: npm install @aite550659/atp-sdk
  */
 
-import { ATPClient } from '../src';
+import { ATPClient } from '@aite550659/atp-sdk';
 
 async function main() {
   // Initialize client
   const atp = new ATPClient({
     network: 'testnet',
-    operatorId: process.env.HEDERA_ACCOUNT_ID!,
-    operatorKey: process.env.HEDERA_PRIVATE_KEY!,
-    indexerUrl: 'https://atp-indexer-testnet.hedera.com'
+    operatorId: '0.0.YOUR_ACCOUNT',
+    operatorKey: 'YOUR_PRIVATE_KEY',
+    indexerUrl: 'https://your-indexer.example.com', // optional
   });
 
-  try {
-    // Get agent information
-    const agentId = '0.0.XXXXXX';
-    const agentResponse = await atp.indexer.getAgent(agentId);
-    
-    if (!agentResponse.success) {
-      throw new Error(`Failed to get agent: ${agentResponse.error}`);
-    }
+  // Register an agent with a verifiable soul
+  const agent = await atp.agents.register({
+    name: 'MyAgent',
+    description: 'A helpful AI assistant',
+    soulHash: 'sha256:abc123...', // hash of your agent's SOUL.md
+    pricing: {
+      flashBaseFee: 0.07,
+      standardBaseFee: 5.0,
+      perInstruction: 0.05,
+      perMinute: 0.01,
+      llmMarkupBps: 150,
+      toolMarkupBps: 150,
+    },
+  });
 
-    const agent = agentResponse.data!;
-    console.log(`Agent: ${agent.name}`);
-    console.log(`Owner: ${agent.owner}`);
-    console.log(`Soul Hash: ${agent.soulHash}`);
+  console.log(`Agent registered: ${agent.agentId}`);
 
-    // Check renter reputation
-    const repResponse = await atp.indexer.getReputation(atp.config.operatorId);
-    
-    if (!repResponse.success) {
-      throw new Error(`Failed to get reputation: ${repResponse.error}`);
-    }
+  // Rent an agent (as a renter)
+  const rental = await atp.rentals.initiate({
+    agentId: agent.agentId,
+    type: 'session',
+    stakeUsd: 10.00,
+    bufferUsd: 5.00,
+    expectedDurationMinutes: 30,
+  });
 
-    const reputation = repResponse.data!;
-    console.log(`Your reputation: ${reputation.score}`);
+  console.log(`Rental started: ${rental.rentalId}`);
+  console.log(`Escrow: ${rental.escrowAccount}`);
 
-    // Initiate rental
-    console.log('Initiating rental...');
-    const rental = await atp.rentals.initiate({
-      agentId: agentId,
-      type: 'session',
-      stake: 50.00,        // $50 USD stake
-      buffer: 100.00,      // $100 usage buffer
-      constraints: {
-        toolsBlocked: ['wallet', 'exec_elevated'],
-        memoryAccessLevel: 'sandboxed',
-        topicsBlocked: [],
-        maxPerInstructionCost: 10.00,
-        maxDailyCost: 100.00
-      }
-    });
+  // ... agent does work ...
 
-    console.log(`Rental initiated: ${rental.rentalId}`);
-    console.log(`Escrow account: ${rental.escrowAccount}`);
+  // Complete rental with usage report
+  await atp.rentals.complete(rental.rentalId, {
+    totalInstructions: 45,
+    totalTokens: 150000,
+    totalCostUsd: 2.50,
+    uptimePercentage: 99.0,
+  });
 
-    // Check rental status periodically
-    console.log('Checking rental status...');
-    const statusResponse = await atp.indexer.getRentalStatus(rental.rentalId);
-    
-    if (!statusResponse.success) {
-      throw new Error(`Failed to get status: ${statusResponse.error}`);
-    }
-
-    const status = statusResponse.data!;
-    console.log(`Status: ${status.status}`);
-    console.log(`Usage to date: $${status.usageToDate || 0}`);
-
-    // ... do work with the agent ...
-
-    // Complete rental
-    console.log('Completing rental...');
-    await atp.rentals.complete(rental.rentalId, {
-      totalInstructions: 12,
-      totalTokens: 24000,
-      totalCost: 8.50,
-      uptimePercentage: 100.0
-    });
-
-    console.log('Rental completed successfully!');
-
-  } finally {
-    // Clean up
-    await atp.close();
-  }
+  console.log('Rental completed. Settlement executed on-chain.');
 }
 
-// Run example
-main()
-  .then(() => process.exit(0))
-  .catch((error) => {
-    console.error('Error:', error);
-    process.exit(1);
-  });
+main().catch(console.error);
