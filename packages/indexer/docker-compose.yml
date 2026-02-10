@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: atp-indexer-postgres
+    environment:
+      POSTGRES_USER: vai
+      POSTGRES_PASSWORD: vai-atp-dev
+      POSTGRES_DB: atp_indexer
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U vai']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  indexer:
+    build: .
+    container_name: atp-indexer
+    environment:
+      DATABASE_URL: postgresql://vai:vai-atp-dev@postgres:5432/atp_indexer
+      NETWORK: mainnet
+      MIRROR_NODE_URL: https://mainnet.mirrornode.hedera.com
+      POLL_INTERVAL_MS: 5000
+      PORT: 3850
+      LOG_LEVEL: info
+      SEED_TOPICS: 0.0.10261370,0.0.10268541
+    ports:
+      - '3850:3850'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
