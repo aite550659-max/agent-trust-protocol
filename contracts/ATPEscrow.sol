@@ -37,7 +37,7 @@ contract ATPEscrow {
         address payable renter;
         address payable owner;
         address payable creator;
-        uint256 stakeAmount;      // in tinybars
+        uint256 stakeAmount;      // in tinybars (msg.value on Hedera EVM)
         uint256 bufferAmount;     // in tinybars
         uint256 totalEscrowed;    // stakeAmount + bufferAmount
         uint64 startedAt;         // unix timestamp
@@ -49,6 +49,11 @@ contract ATPEscrow {
     // --- Storage ---
     mapping(bytes32 => Rental) public rentals;
     uint256 public rentalCount;
+
+    // --- Pull Pattern: Withdrawable Balances ---
+    // Hedera EVM cannot push HBAR via .call{value}(). 
+    // Instead, we credit balances and let recipients withdraw.
+    mapping(address => uint256) public withdrawable;
 
     // --- Events ---
     event RentalInitiated(
@@ -81,6 +86,17 @@ contract ATPEscrow {
         bytes32 indexed rentalHash,
         address indexed renter,
         uint256 refundAmount
+    );
+
+    event BalanceCredited(
+        address indexed recipient,
+        uint256 amount,
+        bytes32 indexed rentalHash
+    );
+
+    event Withdrawn(
+        address indexed recipient,
+        uint256 amount
     );
 
     // --- Modifiers ---
@@ -230,6 +246,7 @@ contract ATPEscrow {
     /**
      * Claim timeout refund as renter.
      * Available after timeoutAt, returns full escrow minus minimal protocol fees.
+     * Credits renter's withdrawable balance; minimal fees credited to network/treasury.
      * @param rentalHash Hash of the rental ID
      */
     function claimTimeout(
@@ -246,10 +263,10 @@ contract ATPEscrow {
 
         rental.status = RentalStatus.TimedOut;
 
-        // Transfer refund to renter, accumulate protocol fees
-        _safeTransfer(rental.renter, renterRefund);
-        pendingWithdrawals[networkAddress] += networkFee;
-        pendingWithdrawals[treasuryAddress] += treasuryFee;
+        // Credit balances (pull pattern)
+        _credit(networkAddress, networkFee, rentalHash);
+        _credit(treasuryAddress, treasuryFee, rentalHash);
+        _credit(rental.renter, renterRefund, rentalHash);
 
         emit RentalTimeoutClaimed(rentalHash, rental.renter, renterRefund);
     }
@@ -259,10 +276,12 @@ contract ATPEscrow {
     /**
      * Execute settlement: distribute charged amount per fee splits,
      * return stake + unused buffer to renter.
+     *
+     * PULL PATTERN: All amounts are credited to withdrawable balances.
+     * Recipients call withdraw() to claim their HBAR.
+     * This avoids Hedera EVM limitations with .call{value}() transfers
+     * and prevents reentrancy attacks.
      */
-    // Accumulated fees for withdrawal (Hedera system accounts can't receive via call{value})
-    mapping(address => uint256) public pendingWithdrawals;
-
     function _settle(
         bytes32 rentalHash,
         uint256 chargedAmount,
@@ -281,14 +300,12 @@ contract ATPEscrow {
 
         rental.status = newStatus;
 
-        // Direct transfers to user accounts (owner, creator, renter)
-        _safeTransfer(rental.owner, ownerPayout);
-        _safeTransfer(rental.creator, creatorPayout);
-        _safeTransfer(rental.renter, renterRefund);
-
-        // Accumulate protocol fees (withdrawn via Hedera SDK to handle system accounts)
-        pendingWithdrawals[networkAddress] += networkPayout;
-        pendingWithdrawals[treasuryAddress] += treasuryPayout;
+        // Credit all balances (pull pattern — no push transfers)
+        _credit(rental.owner, ownerPayout, rentalHash);
+        _credit(rental.creator, creatorPayout, rentalHash);
+        _credit(networkAddress, networkPayout, rentalHash);
+        _credit(treasuryAddress, treasuryPayout, rentalHash);
+        _credit(rental.renter, renterRefund, rentalHash);
 
         emit RentalCompleted(
             rentalHash,
@@ -300,19 +317,49 @@ contract ATPEscrow {
         );
     }
 
-    /** Withdraw accumulated protocol fees. Callable by admin. */
-    function withdrawFees(address payable to) external onlyAdmin {
-        uint256 amount = pendingWithdrawals[to];
-        require(amount > 0, "ATP: nothing to withdraw");
-        pendingWithdrawals[to] = 0;
-        _safeTransfer(to, amount);
+    /**
+     * Credit an amount to a recipient's withdrawable balance.
+     */
+    function _credit(address recipient, uint256 amount, bytes32 rentalHash) internal {
+        if (amount > 0) {
+            withdrawable[recipient] += amount;
+            emit BalanceCredited(recipient, amount, rentalHash);
+        }
     }
 
-    function _safeTransfer(address payable to, uint256 amount) internal {
-        if (amount > 0) {
-            (bool success, ) = to.call{value: amount}("");
-            require(success, "ATP: transfer failed");
-        }
+    /**
+     * Withdraw all credited balance. Callable by anyone with a balance.
+     * Uses checks-effects-interactions pattern to prevent reentrancy.
+     */
+    function withdraw() external {
+        uint256 amount = withdrawable[msg.sender];
+        require(amount > 0, "ATP: nothing to withdraw");
+
+        // Effects before interactions (reentrancy safe)
+        withdrawable[msg.sender] = 0;
+
+        // Transfer HBAR to caller
+        (bool success, ) = payable(msg.sender).call{value: amount}("");
+        require(success, "ATP: withdrawal failed");
+
+        emit Withdrawn(msg.sender, amount);
+    }
+
+    /**
+     * Admin can withdraw on behalf of system accounts (e.g., 0.0.800)
+     * that cannot call withdraw() themselves.
+     * Funds are sent to admin; admin handles forwarding via Hedera SDK.
+     */
+    function withdrawFor(address account) external onlyAdmin {
+        uint256 amount = withdrawable[account];
+        require(amount > 0, "ATP: nothing to withdraw");
+
+        withdrawable[account] = 0;
+
+        (bool success, ) = payable(admin).call{value: amount}("");
+        require(success, "ATP: withdrawal failed");
+
+        emit Withdrawn(account, amount);
     }
 
     // --- View Functions ---
