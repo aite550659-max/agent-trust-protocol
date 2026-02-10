@@ -246,10 +246,10 @@ contract ATPEscrow {
 
         rental.status = RentalStatus.TimedOut;
 
-        // Transfer
-        _safeTransfer(networkAddress, networkFee);
-        _safeTransfer(treasuryAddress, treasuryFee);
+        // Transfer refund to renter, accumulate protocol fees
         _safeTransfer(rental.renter, renterRefund);
+        pendingWithdrawals[networkAddress] += networkFee;
+        pendingWithdrawals[treasuryAddress] += treasuryFee;
 
         emit RentalTimeoutClaimed(rentalHash, rental.renter, renterRefund);
     }
@@ -260,6 +260,9 @@ contract ATPEscrow {
      * Execute settlement: distribute charged amount per fee splits,
      * return stake + unused buffer to renter.
      */
+    // Accumulated fees for withdrawal (Hedera system accounts can't receive via call{value})
+    mapping(address => uint256) public pendingWithdrawals;
+
     function _settle(
         bytes32 rentalHash,
         uint256 chargedAmount,
@@ -278,12 +281,14 @@ contract ATPEscrow {
 
         rental.status = newStatus;
 
-        // Execute transfers
+        // Direct transfers to user accounts (owner, creator, renter)
         _safeTransfer(rental.owner, ownerPayout);
         _safeTransfer(rental.creator, creatorPayout);
-        _safeTransfer(networkAddress, networkPayout);
-        _safeTransfer(treasuryAddress, treasuryPayout);
         _safeTransfer(rental.renter, renterRefund);
+
+        // Accumulate protocol fees (withdrawn via Hedera SDK to handle system accounts)
+        pendingWithdrawals[networkAddress] += networkPayout;
+        pendingWithdrawals[treasuryAddress] += treasuryPayout;
 
         emit RentalCompleted(
             rentalHash,
@@ -293,6 +298,14 @@ contract ATPEscrow {
             treasuryPayout,
             renterRefund
         );
+    }
+
+    /** Withdraw accumulated protocol fees. Callable by admin. */
+    function withdrawFees(address payable to) external onlyAdmin {
+        uint256 amount = pendingWithdrawals[to];
+        require(amount > 0, "ATP: nothing to withdraw");
+        pendingWithdrawals[to] = 0;
+        _safeTransfer(to, amount);
     }
 
     function _safeTransfer(address payable to, uint256 amount) internal {
@@ -330,4 +343,8 @@ contract ATPEscrow {
         require(newAdmin != address(0), "ATP: zero admin");
         admin = newAdmin;
     }
+
+    // Allow contract to receive HBAR
+    receive() external payable {}
+    fallback() external payable {}
 }
